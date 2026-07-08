@@ -173,9 +173,7 @@ func isSessionAlive(client *http.Client, logging bool) (bool, string, error) {
 	// The logged-out homepage is exactly 4145 bytes. Comparing the decoded body
 	// length works even when the response is chunked (ContentLength == -1).
 	bodyLen := len(body)
-	if logging {
-		log.Printf("Response body length: %d bytes\n", bodyLen)
-	}
+	log.Printf("Response body length: %d bytes\n", bodyLen)
 	valid := len(body) != 4213
 
 	if logging {
