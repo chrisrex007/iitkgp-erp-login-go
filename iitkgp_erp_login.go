@@ -1,8 +1,8 @@
 package iitkgp_erp_login
 
 import (
-	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -10,6 +10,7 @@ import (
 	"net/http/cookiejar"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"syscall"
 	"time"
@@ -20,12 +21,16 @@ import (
 
 const logging = true
 
+const ssoTokenPrefix = "ssoToken="
+
+var ssoTokenRegex = regexp.MustCompile(`ssoToken=[^"'\s&]+`)
+
 type loginDetails struct {
-	user_id      string
+	userID       string
 	password     string
 	answer       string
-	requestedUrl string
-	email_otp    string
+	requestedURL string
+	emailOTP     string
 }
 
 type erpCreds struct {
@@ -34,90 +39,110 @@ type erpCreds struct {
 	SecurityQuestionsAnswers map[string]string `json:"answers"`
 }
 
-func input_creds(client *http.Client, logging bool) loginDetails {
+func inputCreds(client *http.Client, logging bool) (loginDetails, error) {
 	loginParams := loginDetails{
-		requestedUrl: HOMEPAGE_URL,
+		requestedURL: HOMEPAGE_URL,
 	}
 
-	if is_file("erpcreds.json") {
+	if fileExists("erpcreds.json") {
 		log.Println("Found ERP Credentials file")
 
-		creds_file, err := os.Open("erpcreds.json")
-		check_error(err)
-		defer creds_file.Close()
-
-		scanner := bufio.NewScanner(creds_file)
-		scanner.Split(bufio.ScanLines)
-
-		var creds_byte []byte
-
-		for scanner.Scan() {
-			creds_byte = append(creds_byte, scanner.Bytes()...)
+		credsByte, err := os.ReadFile("erpcreds.json")
+		if err != nil {
+			return loginDetails{}, fmt.Errorf("reading erpcreds.json: %w", err)
 		}
 
-		var erp_creds erpCreds
+		var creds erpCreds
+		if err := json.Unmarshal(credsByte, &creds); err != nil {
+			return loginDetails{}, fmt.Errorf("parsing erpcreds.json: %w", err)
+		}
 
-		err = json.Unmarshal(creds_byte, &erp_creds)
-		check_error(err)
+		question, err := getSecretQuestion(client, creds.RollNumber, logging)
+		if err != nil {
+			return loginDetails{}, err
+		}
 
-		loginParams.user_id = erp_creds.RollNumber
-		loginParams.password = erp_creds.Password
-		loginParams.answer = erp_creds.SecurityQuestionsAnswers[get_secret_question(client, erp_creds.RollNumber, logging)]
+		answer, ok := creds.SecurityQuestionsAnswers[question]
+		if !ok {
+			return loginDetails{}, fmt.Errorf("no stored answer for security question %q", question)
+		}
+
+		loginParams.userID = creds.RollNumber
+		loginParams.password = creds.Password
+		loginParams.answer = answer
 	} else {
 		fmt.Print("Enter Roll No.: ")
-		fmt.Scan(&loginParams.user_id)
+		if _, err := fmt.Scan(&loginParams.userID); err != nil {
+			return loginDetails{}, fmt.Errorf("reading roll number: %w", err)
+		}
 
 		fmt.Print("Enter ERP Password: ")
-		byte_password, err := term.ReadPassword(int(syscall.Stdin))
-		check_error(err)
-		loginParams.password = string(byte_password)
+		bytePassword, err := term.ReadPassword(int(syscall.Stdin))
+		if err != nil {
+			return loginDetails{}, fmt.Errorf("reading password: %w", err)
+		}
+		loginParams.password = string(bytePassword)
 		fmt.Println()
 
-		fmt.Printf("Your secret question: %s\n", get_secret_question(client, loginParams.user_id, logging))
+		question, err := getSecretQuestion(client, loginParams.userID, logging)
+		if err != nil {
+			return loginDetails{}, err
+		}
+		fmt.Printf("Your secret question: %s\n", question)
 		fmt.Print("Enter answer to your secret question: ")
-		byte_answer, err := term.ReadPassword(int(syscall.Stdin))
-		check_error(err)
-
-		loginParams.answer = string(byte_answer)
+		byteAnswer, err := term.ReadPassword(int(syscall.Stdin))
+		if err != nil {
+			return loginDetails{}, fmt.Errorf("reading answer: %w", err)
+		}
+		loginParams.answer = string(byteAnswer)
 		fmt.Println()
 	}
-	return loginParams
+	return loginParams, nil
 }
 
-func get_secret_question(client *http.Client, roll_number string, logging bool) string {
+func getSecretQuestion(client *http.Client, rollNumber string, logging bool) (string, error) {
 	data := map[string][]string{
-		"user_id": {roll_number},
+		"user_id": {rollNumber},
 	}
 
 	res, err := client.PostForm(SECRET_QUESTION_URL, data)
-	check_error(err)
+	if err != nil {
+		return "", fmt.Errorf("fetching security question: %w", err)
+	}
 	defer res.Body.Close()
 
 	body, err := io.ReadAll(res.Body)
-	check_error(err)
+	if err != nil {
+		return "", fmt.Errorf("reading security question: %w", err)
+	}
 
 	if logging {
 		log.Println("Fetched Security Question")
 	}
 
-	return string(body)
+	return strings.TrimSpace(string(body)), nil
 }
 
-func is_otp_required() bool {
+// isOTPRequired pings the ERP network to decide whether an OTP is needed. If the
+// ping cannot be performed it fails safe by assuming an OTP is required.
+func isOTPRequired() (bool, error) {
 	pinger, err := ping.NewPinger(PING_URL)
-	check_error(err)
+	if err != nil {
+		return false, fmt.Errorf("creating pinger: %w", err)
+	}
 	pinger.Count = 1
-	pinger.Timeout = time.Duration(4 * float64(time.Second))
+	pinger.Timeout = 4 * time.Second
 
-	err = pinger.Run()
-	check_error(err)
+	if err := pinger.Run(); err != nil {
+		return true, nil
+	}
 
-	return pinger.Statistics().PacketsRecv != 1
+	return pinger.Statistics().PacketsRecv != 1, nil
 }
 
-func is_session_alive(client *http.Client, logging bool) (bool, string) {
-	if !is_file(".session") {
-		return false, ""
+func isSessionAlive(client *http.Client, logging bool) (bool, string, error) {
+	if !fileExists(".session") {
+		return false, "", nil
 	}
 
 	if logging {
@@ -125,72 +150,121 @@ func is_session_alive(client *http.Client, logging bool) (bool, string) {
 		log.Println("Checking session validity...")
 	}
 
-	session_byte, err := os.ReadFile(".session")
-	check_error(err)
-	ssoToken := string(session_byte)
+	sessionByte, err := os.ReadFile(".session")
+	if err != nil {
+		return false, "", fmt.Errorf("reading .session: %w", err)
+	}
+	ssoToken := strings.TrimSpace(string(sessionByte))
+	if ssoToken == "" {
+		return false, "", nil
+	}
 
 	res, err := client.Get(HOMEPAGE_URL + "?" + ssoToken)
-	check_error(err)
+	if err != nil {
+		return false, "", fmt.Errorf("checking session: %w", err)
+	}
 	defer res.Body.Close()
 
+	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		return false, "", fmt.Errorf("reading session check response: %w", err)
+	}
+
+	// The logged-out homepage is exactly 4145 bytes. Comparing the decoded body
+	// length works even when the response is chunked (ContentLength == -1).
+	valid := len(body) != 4145
+
 	if logging {
-		if res.ContentLength != 4145 {
+		if valid {
 			log.Println("Session valid")
 		} else {
 			log.Println("Session invalid")
 		}
 	}
 
-	return res.ContentLength != 4145, ssoToken
+	return valid, ssoToken, nil
 }
 
-func ERPSession() (*http.Client, string) {
-	jar, err := cookiejar.New(nil)
-	check_error(err)
-	client := http.Client{Jar: jar}
+// extractSSOToken pulls the "ssoToken=..." value out of the login response HTML.
+func extractSSOToken(body string) (string, error) {
+	token := ssoTokenRegex.FindString(body)
+	if token == "" {
+		return "", errors.New("login failed: ssoToken not found in response (check credentials/OTP)")
+	}
+	return token, nil
+}
 
-	var ssoToken string
-	var isSession bool
-	isSession, ssoToken = is_session_alive(&client, logging)
+// ERPSession logs in to the IIT Kharagpur ERP (reusing a cached session when
+// possible) and returns an authenticated HTTP client together with the ssoToken.
+func ERPSession() (*http.Client, string, error) {
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		return nil, "", fmt.Errorf("creating cookie jar: %w", err)
+	}
+	client := &http.Client{Jar: jar}
+
+	isSession, ssoToken, err := isSessionAlive(client, logging)
+	if err != nil {
+		return nil, "", err
+	}
 
 	if !isSession {
-		loginParams := input_creds(&client, logging)
+		loginParams, err := inputCreds(client, logging)
+		if err != nil {
+			return nil, "", err
+		}
 
-		if true {
+		otpRequired, err := isOTPRequired()
+		if err != nil {
+			return nil, "", err
+		}
+		if otpRequired {
 			if logging {
 				log.Println("OTP is required")
 			}
-			loginParams.email_otp = fetch_otp(&client, loginParams, logging)
+			loginParams.emailOTP, err = fetchOTP(client, loginParams, logging)
+			if err != nil {
+				return nil, "", err
+			}
 		}
 
 		data := url.Values{}
-		data.Set("user_id", loginParams.user_id)
+		data.Set("user_id", loginParams.userID)
 		data.Set("password", loginParams.password)
 		data.Set("answer", loginParams.answer)
-		data.Set("requestedUrl", loginParams.requestedUrl)
-		data.Set("email_otp", loginParams.email_otp)
+		data.Set("requestedUrl", loginParams.requestedURL)
+		data.Set("email_otp", loginParams.emailOTP)
 
 		res, err := client.PostForm(LOGIN_URL, data)
-		check_error(err)
+		if err != nil {
+			return nil, "", fmt.Errorf("posting login: %w", err)
+		}
 		defer res.Body.Close()
 
-		log.Println("ERP login complete!")
 		body, err := io.ReadAll(res.Body)
-		check_error(err)
+		if err != nil {
+			return nil, "", fmt.Errorf("reading login response: %w", err)
+		}
 
-		bodys := string(body)
-		i := strings.Index(bodys, "ssoToken")
-		ssoToken = bodys[strings.LastIndex(bodys[:i], "\"")+1 : strings.Index(bodys, "ssoToken")+strings.Index(bodys[i:], "\"")]
+		ssoToken, err = extractSSOToken(string(body))
+		if err != nil {
+			return nil, "", err
+		}
 
-		err = os.WriteFile(".session", []byte(ssoToken), 0666)
-		check_error(err)
+		log.Println("ERP login complete!")
 
+		if err := os.WriteFile(".session", []byte(ssoToken), 0600); err != nil {
+			return nil, "", fmt.Errorf("writing .session: %w", err)
+		}
 	}
 
 	u, err := url.Parse("https://erp.iitkgp.ac.in/")
-	check_error(err)
+	if err != nil {
+		return nil, "", fmt.Errorf("parsing ERP URL: %w", err)
+	}
 
-	client.Jar.SetCookies(u, []*http.Cookie{{Name: "ssoToken", Value: ssoToken[9:]}})
+	cookieValue := strings.TrimPrefix(ssoToken, ssoTokenPrefix)
+	client.Jar.SetCookies(u, []*http.Cookie{{Name: "ssoToken", Value: cookieValue}})
 
-	return &client, ssoToken
+	return client, ssoToken, nil
 }

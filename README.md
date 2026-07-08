@@ -105,14 +105,19 @@ The following code logs in to ERP and opens ERP homepage in the browser.
 package main
 
 import (
+	"log"
+
 	erp "github.com/metakgp/iitkgp-erp-login-go"
 
 	"github.com/pkg/browser"
 )
 
 func main() {
-	_, ssoToken := erp.ERPSession()
-	
+	_, ssoToken, err := erp.ERPSession()
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	browser.OpenURL(erp.HOMEPAGE_URL + "?" + ssoToken)
 }
 ```
