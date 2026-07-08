@@ -3,4 +3,4 @@ vendor
 .token
 *.json
 .session
-cmd/main.go
+cmd/

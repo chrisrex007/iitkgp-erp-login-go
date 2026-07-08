@@ -1,4 +1,4 @@
-module github.com/metakgp/iitkgp-erp-login-go
+module github.com/chrisrex007/iitkgp-erp-login-go
 
 go 1.21.4
 

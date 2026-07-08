@@ -75,7 +75,7 @@ _Now that the environment has been set up and configured to properly compile and
 <!-- UPDATE -->
 1. Clone the repository
    ```sh
-   git clone https://github.com/metakgp/iitkgp-erp-login-go
+   git clone https://github.com/chrisrex007/iitkgp-erp-login-go
    ```
 2. Install dependencies
    ```sh
@@ -107,7 +107,7 @@ package main
 import (
 	"log"
 
-	erp "github.com/metakgp/iitkgp-erp-login-go"
+	erp "github.com/chrisrex007/iitkgp-erp-login-go"
 
 	"github.com/pkg/browser"
 )

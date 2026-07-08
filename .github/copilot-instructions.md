@@ -1,6 +1,6 @@
 # Copilot instructions for `iitkgp-erp-login-go`
 
-A Go **library** (package `iitkgp_erp_login`, module `github.com/metakgp/iitkgp-erp-login-go`) that automates the login workflow for the IIT Kharagpur ERP. It exposes a single public entry point and manages sessions, credentials, and email-OTP retrieval. This repo (`chrisrex007/...`) is a fork; upstream is `metakgp/iitkgp-erp-login-go`.
+A Go **library** (package `iitkgp_erp_login`, module `github.com/chrisrex007/iitkgp-erp-login-go`) that automates the login workflow for the IIT Kharagpur ERP. It exposes a single public entry point and manages sessions, credentials, and email-OTP retrieval. This repo (`chrisrex007/...`) is a fork; upstream is `metakgp/iitkgp-erp-login-go`.
 
 ## Build / test / lint
 
