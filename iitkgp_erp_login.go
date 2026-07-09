@@ -174,7 +174,7 @@ func isSessionAlive(client *http.Client, logging bool) (bool, string, error) {
 	// length works even when the response is chunked (ContentLength == -1).
 	bodyLen := len(body)
 	log.Printf("Response body length: %d bytes\n", bodyLen)
-	valid := len(body) < 5000
+	valid := len(body) > 5000
 
 	if logging {
 		if valid {
